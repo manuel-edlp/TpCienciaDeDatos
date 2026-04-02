@@ -4,3 +4,11 @@ backgroundColor = "#0E1117"
 secondaryBackgroundColor = "#1A1C24"
 textColor = "#FAFAFA"
 font = "sans serif"
+
+[server]
+# Esto evita que Streamlit escanee profundamente las librerías
+fileWatcherType = "none"
+
+[browser]
+# Esto evita que la web te pida recargar todo el tiempo si hay errores de este tipo
+gatherUsageStats = false

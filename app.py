@@ -3,8 +3,19 @@ import pandas as pd
 import faiss
 import joblib
 import os
+import socket
 import google.generativeai as genai
 from sentence_transformers import SentenceTransformer
+
+# --- CONSTANTES Y RUTAS ---
+FAISS_FILE = "movie_embeddings.faiss"
+DATA_FILE = "movies_preprocessed.pkl"
+SCALER_FILE = "scaler.joblib"
+
+# --- DETECCIÓN DE ENTORNO ---
+def es_local():
+    is_cloud = os.environ.get("STREAMLIT_RUNTIME_ENV", False)
+    return not is_cloud and "streamlit" not in socket.gethostname().lower()
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -12,11 +23,6 @@ st.set_page_config(
     page_icon=":material/movie:", 
     layout="centered"
 )
-
-# Rutas de artefactos
-FAISS_FILE = "movie_embeddings.faiss"
-DATA_FILE = "movies_preprocessed.pkl"
-SCALER_FILE = "scaler.joblib"
 
 # --- CARGA DE RECURSOS (CACHED) ---
 @st.cache_resource
@@ -29,8 +35,8 @@ def load_resources():
 
 try:
     movies_df, index, scaler, model_st = load_resources()
-except Exception:
-    st.error("Error: No se detectaron los archivos de datos.", icon=":material/database_alert:")
+except Exception as e:
+    st.error(f"Error cargando datos: {e}", icon=":material/database_alert:")
     st.stop()
 
 # --- GESTIÓN DE ESTADO ---
@@ -41,13 +47,8 @@ if "api_autenticada" not in st.session_state:
 
 def configurar_api():
     st.sidebar.header("Configuración de Sistema", divider="gray")
-    
-    st.sidebar.markdown("""
-        ### Backend Engine
-        Esta aplicación utiliza modelos generativos de Google.
-    """)
+    st.sidebar.markdown("### Backend Engine")
 
-    # Campo de texto para API Key
     key_input = st.sidebar.text_input(
         "Ingresar API Key Personal", 
         type="password", 
@@ -55,7 +56,6 @@ def configurar_api():
         help="Obtén tu clave en Google AI Studio."
     )
 
-    # Botón para confirmar la clave
     if st.sidebar.button("Validar API Key", use_container_width=True):
         if key_input:
             st.session_state.api_autenticada = True
@@ -63,9 +63,8 @@ def configurar_api():
         else:
             st.sidebar.warning("Ingresa una clave válida.", icon=":material/warning:")
 
-    selected_model = "gemini-3-flash" 
+    selected_model = "gemma-3-27b-it" 
     
-    # ESCENARIO A: USANDO CLAVE PERSONAL DEL USUARIO
     if st.session_state.api_autenticada and key_input:
         genai.configure(api_key=key_input)
         st.sidebar.success("Modo: API Key Personal", icon=":material/shield_person:")
@@ -75,39 +74,37 @@ def configurar_api():
             ["gemini-3-flash", "gemini-3-pro", "gemini-2.5-flash", "gemma-3-27b-it", "gemma-3-12b-it"]
         )
 
-        # Información de cuotas debajo del selector
         st.sidebar.markdown(f"""
-            <div style="font-size: 0.8rem; color: gray; margin-top: 10px;">
+            <div style="font-size: 0.8rem; color: gray; margin-top: 15px;">
                 Límites sujetos a tu cuota en <a href="https://aistudio.google.com/app/plan_management" target="_blank" style="color: #007BFF; text-decoration: none;">Google AI Studio</a>.<br>
                 Consulta tu consumo <a href="https://aistudio.google.com/app/usage" target="_blank" style="color: #007BFF; text-decoration: none;">aquí</a>.
             </div>
             """, unsafe_allow_html=True)
-    
-    # ESCENARIO B: USANDO CLAVE POR DEFECTO (SOPORTE DE SISTEMA)
+        
+        return genai.GenerativeModel(selected_model), True
+
     else:
-        if st.session_state.rate_limit < 5:
-            try:
-                my_key = st.secrets["GEMINI_API_KEY"]
+        if "GEMINI_API_KEY" in st.secrets:
+            my_key = st.secrets["GEMINI_API_KEY"]
+            
+            if st.session_state.rate_limit < 5:
                 genai.configure(api_key=my_key)
                 restantes = 5 - st.session_state.rate_limit
                 
-                st.sidebar.info("Modo: Soporte de Sistema", icon=":material/Settings_Suggest:")
+                # CORRECCIÓN AQUÍ: settings_suggest en minúsculas
+                modo_label = "Modo: Local (Config)" if es_local() else "Modo: Soporte de Sistema"
+                st.sidebar.info(modo_label, icon=":material/settings_suggest:")
                 st.sidebar.progress(restantes / 5, text=f"{restantes} créditos restantes")
                 st.sidebar.caption("Recursos de infraestructura provistos por el desarrollador.")
-            except Exception:
-                st.sidebar.error("Error de configuración de servidor (Secrets).", icon=":material/error:")
-                return None, None
+                
+                return genai.GenerativeModel(selected_model), False
+            else:
+                st.sidebar.warning("Soporte de sistema agotado", icon=":material/lock_clock:")
+                st.sidebar.markdown("Obtén una clave en [Google AI Studio](https://aistudio.google.com/app/apikey).")
+                return None, False
         else:
-            # ESCENARIO C: CUOTA AGOTADA
-            st.sidebar.warning("Soporte de sistema agotado", icon=":material/lock_clock:")
-            st.sidebar.markdown("""
-                Para continuar con las pruebas:
-                1. Obtén una clave gratuita en [Google AI Studio](https://aistudio.google.com/app/apikey).
-                2. Pégala arriba y presiona 'Validar API Key'.
-            """)
-            return None, None
-            
-    return genai.GenerativeModel(selected_model), (st.session_state.api_autenticada and key_input)
+            st.sidebar.error("Archivo de secretos detectado pero 'GEMINI_API_KEY' no encontrada.", icon=":material/key_off:")
+            return None, False
 
 # --- LÓGICA DE BÚSQUEDA ---
 def buscar_peliculas(query, top_k=5):
@@ -119,15 +116,18 @@ def buscar_peliculas(query, top_k=5):
 # --- INTERFAZ PRINCIPAL ---
 st.title(":material/smart_toy: Movie AI Recommender")
 st.subheader("Búsqueda Semántica de Cine", divider="blue")
-st.markdown("Utiliza Inteligencia Artificial para encontrar películas por su significado, no solo por palabras clave.")
+st.markdown("Utiliza Inteligencia Artificial para encontrar películas por su significado.")
 
-model_gemini, usando_llave_personal = configurar_api()
+res_config = configurar_api()
+if res_config:
+    model_gemini, usando_personal = res_config
+else:
+    model_gemini, usando_personal = None, False
 
 user_query = st.text_input(
-    "Consulta",
-    placeholder="Un thriller psicológico oscuro de los 90 con final inesperado",
-    max_chars=150,
-    label_visibility="collapsed"
+    "Busca películas describiendo lo que sientes o quieres ver", 
+    placeholder="Ejemplo: Una película de acción de los 2000 con mucha comedia",
+    max_chars=150
 )
 
 col_btn, _ = st.columns([1, 3])
@@ -136,35 +136,38 @@ with col_btn:
 
 if btn_search:
     if not model_gemini:
-        st.error("Se requiere autenticación para procesar la consulta.", icon=":material/lock:")
+        st.error("Se requiere una API Key válida.", icon=":material/lock:")
     elif user_query:
-        with st.status("Ejecutando pipeline de IA...", expanded=True) as status:
-            st.write("Recuperando información vectorial (FAISS)...")
+        # Usamos spinner para una carga limpia sin contenedores colapsables
+        with st.spinner("Analizando preferencias y consultando base de datos..."):
+            # 1. Búsqueda Vectorial
             recs = buscar_peliculas(user_query)
             
-            st.write("Generando análisis semántico con LLM...")
+            # 2. Preparación de contexto
             contexto = "\n".join([
                 f"- {row['CleanTitle']} ({row['Year']}): {row['Genres']}." 
                 for _, row in recs.iterrows()
             ])
             
-            prompt = f"Usuario busca: {user_query}\nCandidatos encontrados en base de datos:\n{contexto}\nRecomienda brevemente las mejores opciones en español."
+            prompt = f"Usuario busca: {user_query}\nCandidatos:\n{contexto}\nRecomienda brevemente las mejores opciones en español."
             
+            # 3. Generación con LLM
             try:
                 response = model_gemini.generate_content(prompt)
-                status.update(label="Análisis finalizado", state="complete", expanded=False)
                 
+                # Mostramos los resultados directamente
                 st.markdown("---")
                 st.markdown("### :material/recommend: Recomendación")
                 st.success(response.text)
                 
-                if not usando_llave_personal:
+                # Actualizar cuota si corresponde
+                if not usando_personal:
                     st.session_state.rate_limit += 1
                     
             except Exception as e:
-                st.error(f"Fallo en la inferencia del modelo: {e}", icon=":material/emergency_home:")
+                st.error(f"Fallo en la inferencia: {e}", icon=":material/emergency_home:")
     else:
         st.warning("Ingresa una descripción para iniciar la búsqueda.", icon=":material/chat_error:")
 
 st.divider()
-st.caption("Ingeniería en Sistemas | v3.2 2026")
+st.caption("Ingeniería en Sistemas | v3.3 2026")
