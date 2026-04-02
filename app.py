@@ -6,13 +6,11 @@ import os
 import socket
 import google.generativeai as genai
 from sentence_transformers import SentenceTransformer
-from streamlit_local_storage import LocalStorage
 
 # --- CONSTANTES Y RUTAS ---
 FAISS_FILE = "movie_embeddings.faiss"
 DATA_FILE = "movies_preprocessed.pkl"
 SCALER_FILE = "scaler.joblib"
-LS_KEY = "movie_recommender_rate_limit"
 
 # --- DETECCIÓN DE ENTORNO ---
 def es_local():
@@ -25,9 +23,6 @@ st.set_page_config(
     page_icon=":material/movie:", 
     layout="centered"
 )
-
-# --- INICIALIZACIÓN DE LOCAL STORAGE ---
-local_storage = LocalStorage()
 
 # --- CARGA DE RECURSOS (CACHED) ---
 @st.cache_resource
@@ -44,14 +39,26 @@ except Exception as e:
     st.error(f"Error cargando datos: {e}", icon=":material/database_alert:")
     st.stop()
 
-# --- GESTIÓN DE ESTADO PERSISTENTE---
-# 1. Leemos del navegador (asíncrono)
-val_ls = local_storage.getItem(LS_KEY)
+# --- GESTIÓN DE ESTADO PERSISTENTE (SERVER-SIDE CACHE) ---
+@st.cache_resource
+def get_server_db():
+    # Diccionario global en el servidor: { user_ip: count }
+    return {}
 
-# 2. Sincronizamos Session State como Fuente de Verdad
+server_db = get_server_db()
+
+# Identificación del usuario por IP
+try:
+    user_ip = st.context.headers.get("X-Forwarded-For", "localhost").split(",")[0]
+except:
+    user_ip = "localhost"
+
+user_key = f"limit_{user_ip}"
+
+# Sincronizamos Session State con la "DB" del servidor
 if "rate_limit" not in st.session_state:
-    if val_ls is not None:
-        st.session_state.rate_limit = int(val_ls)
+    if user_key in server_db:
+        st.session_state.rate_limit = server_db[user_key]
     else:
         st.session_state.rate_limit = 0
 
@@ -75,6 +82,7 @@ def configurar_api():
         if key_input:
             st.session_state.api_autenticada = True
             st.toast("API Key validada correctamente", icon=":material/check_circle:")
+            st.rerun()
         else:
             st.sidebar.warning("Ingresa una clave válida.", icon=":material/warning:")
 
@@ -89,7 +97,6 @@ def configurar_api():
             ["gemini-3-flash", "gemini-3-pro", "gemini-2.5-flash", "gemma-3-27b-it", "gemma-3-12b-it"]
         )
 
-        # Información de cuotas debajo del selector
         st.sidebar.markdown(f"""
             <div style="font-size: 0.8rem; color: gray; margin-top: 10px;">
                 Límites sujetos a tu cuota en <a href="https://aistudio.google.com/app/plan_management" target="_blank" style="color: #007BFF; text-decoration: none;">Google AI Studio</a>.<br>
@@ -99,18 +106,15 @@ def configurar_api():
 
         return genai.GenerativeModel(selected_model), True
 
-
-
     else:
         if "GEMINI_API_KEY" in st.secrets:
             my_key = st.secrets["GEMINI_API_KEY"]
             
-            # Usamos siempre el valor de session_state para la UI
             if st.session_state.rate_limit < 5:
                 genai.configure(api_key=my_key)
                 restantes = 5 - st.session_state.rate_limit
                 
-                modo_label = "Modo: Local (Config)" if es_local() else "Modo: Soporte de Sistema"
+                modo_label = "Modo: Local" if es_local() else "Modo: Soporte de Sistema"
                 st.sidebar.info(modo_label, icon=":material/settings_suggest:")
                 st.sidebar.progress(restantes / 5, text=f"{restantes} créditos restantes")
                 st.sidebar.caption("Recursos provistos por el desarrollador.")
@@ -136,10 +140,7 @@ st.title(":material/smart_toy: Movie AI Recommender")
 st.subheader("Búsqueda Semántica de Cine", divider="blue")
 
 res_config = configurar_api()
-if res_config:
-    model_gemini, usando_personal = res_config
-else:
-    model_gemini, usando_personal = None, False
+model_gemini, usando_personal = res_config if res_config else (None, False)
 
 user_query = st.text_input(
     "Busca películas describiendo lo que sientes o quieres ver", 
@@ -169,10 +170,10 @@ if btn_search:
                 # 1. Actualizar Respuesta
                 st.session_state.ultima_respuesta = response.text
                 
-                # 2. Actualizar Créditos (RAM + Browser)
+                # 2. Actualizar Créditos (RAM + Server Cache)
                 if not usando_personal:
                     st.session_state.rate_limit += 1
-                    local_storage.setItem(LS_KEY, st.session_state.rate_limit)
+                    server_db[user_key] = st.session_state.rate_limit
                     st.toast(f"Crédito usado: {st.session_state.rate_limit}/5", icon=":material/analytics:")
                 
                 # 3. Rerun para refrescar la barra lateral inmediatamente
@@ -188,7 +189,7 @@ if st.session_state.ultima_respuesta:
     st.success(st.session_state.ultima_respuesta)
 
 st.divider()
-st.caption("Ingeniería en Sistemas - Ciencia de Datos")
+st.caption("Ingeniería en Sistemas - Ciencia de Datos | v3.3 2026")
 
 st.markdown(
     """
