@@ -4,6 +4,7 @@ import faiss
 import joblib
 import os
 import socket
+import uuid
 import google.generativeai as genai
 from sentence_transformers import SentenceTransformer
 
@@ -42,26 +43,26 @@ except Exception as e:
 # --- GESTIÓN DE ESTADO PERSISTENTE (SERVER-SIDE CACHE) ---
 @st.cache_resource
 def get_server_db():
-    # Diccionario global en el servidor: { user_ip: count }
+    # Diccionario global en la RAM del servidor: { user_key: count }
     return {}
 
 server_db = get_server_db()
 
-# Identificación del usuario por IP (Lógica robusta para Cloud)
-try:
-    raw_ip = st.context.headers.get("X-Forwarded-For", "localhost")
-    user_ip = raw_ip.split(",")[0].strip() 
-except:
-    user_ip = "localhost"
+# --- LÓGICA DE IDENTIFICACIÓN POR UUID (URL) ---
+# Intentamos obtener el ID de los parámetros de la URL
+current_uid = st.query_params.get("uid")
 
-user_key = f"limit_{user_ip}"
+if not current_uid:
+    # Si no existe, generamos uno nuevo y reiniciamos para inyectarlo en la URL
+    new_uid = str(uuid.uuid4())[:8]
+    st.query_params["uid"] = new_uid
+    st.rerun()
+else:
+    user_key = f"limit_{current_uid}"
 
-# Sincronizamos Session State con la "DB" del servidor
+# Sincronizamos Session State con la "DB" del servidor usando el UUID
 if "rate_limit" not in st.session_state:
-    if user_key in server_db:
-        st.session_state.rate_limit = server_db[user_key]
-    else:
-        st.session_state.rate_limit = 0
+    st.session_state.rate_limit = server_db.get(user_key, 0)
 
 if "api_autenticada" not in st.session_state:
     st.session_state.api_autenticada = False
@@ -71,9 +72,9 @@ if "ultima_respuesta" not in st.session_state:
 def configurar_api():
     st.sidebar.header("Configuración de Sistema", divider="gray")
     
-    # --- MONITOR DE SERVIDOR (DEBUG) ---
+    # --- MONITOR DE SERVIDOR ---
     with st.sidebar.expander("🔍 Monitor de Servidor", expanded=False):
-        st.write(f"**Tu ID actual:** `{user_key}`")
+        st.write(f"**Tu ID de Sesión:** `{user_key}`")
         st.write(f"**Usuarios en RAM:** {len(server_db)}")
         st.json(server_db)
         if st.button("Limpiar Base de Datos RAM", use_container_width=True):
@@ -107,14 +108,6 @@ def configurar_api():
             "Seleccionar Modelo", 
             ["gemini-3-flash", "gemini-3-pro", "gemini-2.5-flash", "gemma-3-27b-it", "gemma-3-12b-it"]
         )
-
-        st.sidebar.markdown(f"""
-            <div style="font-size: 0.8rem; color: gray; margin-top: 10px;">
-                Límites sujetos a tu cuota en <a href="https://aistudio.google.com/app/plan_management" target="_blank" style="color: #007BFF; text-decoration: none;">Google AI Studio</a>.<br>
-                Consulta tu consumo <a href="https://aistudio.google.com/app/usage" target="_blank" style="color: #007BFF; text-decoration: none;">aquí</a>.
-            </div>
-            """, unsafe_allow_html=True)
-
         return genai.GenerativeModel(selected_model), True
 
     else:
@@ -182,6 +175,7 @@ if btn_search:
                 
                 if not usando_personal:
                     st.session_state.rate_limit += 1
+                    # Persistimos en la base de datos RAM del servidor
                     server_db[user_key] = st.session_state.rate_limit
                     st.toast(f"Crédito usado: {st.session_state.rate_limit}/5", icon=":material/analytics:")
                 
@@ -196,8 +190,9 @@ if st.session_state.ultima_respuesta:
     st.success(st.session_state.ultima_respuesta)
 
 st.divider()
-st.caption("Ingeniería en Sistemas - Ciencia de Datos | v3.3.1 2026")
+st.caption("Ingeniería en Sistemas - Ciencia de Datos | v3.6 2026")
 
+# Footer con colaboradores
 st.markdown(
     """
     <style>
