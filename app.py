@@ -140,6 +140,47 @@ if st.session_state.ultima_respuesta:
     st.success(st.session_state.ultima_respuesta)
 
 st.divider()
+# --- SECCIÓN EXPLICATIVA (METODOLOGÍA) ---
+with st.expander("📂 Documentación Técnica: ¿Cómo funciona este Recomendador?", expanded=False):
+    st.markdown("### Arquitectura del Sistema (Pipeline RAG)")
+    st.info("Este proyecto implementa una arquitectura de **Generación Aumentada por Recuperación (RAG)**. A continuación, el detalle del flujo de datos:")
+
+    tab1, tab2, tab3 = st.tabs(["1. Entrada & Preproceso", "2. Vectorización (Embeddings)", "3. Inferencia AI"])
+
+    with tab1:
+        st.markdown("#### 📥 Entrada y Preparación de Datos")
+        st.write("""
+        1. **Dataset Original:** Partimos de un archivo CSV con miles de películas (títulos, años, géneros y sinopsis).
+        2. **Limpieza (Preprocessing):** - Eliminamos registros duplicados o con valores nulos.
+            - Normalizamos el texto (pasamos a minúsculas, quitamos caracteres especiales).
+            - **Feature Engineering:** Creamos una columna 'Sopa de Metadatos' que combina Género + Sinopsis + Director para darle contexto semántico al modelo.
+        """)
+        st.code("# Ejemplo de preprocesamiento\ndf['metadata'] = df['genres'] + ' ' + df['overview']", language="python")
+
+    with tab2:
+        st.markdown("#### 🧠 Procesamiento: Embeddings & FAISS")
+        st.write("""
+        En lugar de buscar palabras exactas (Keyword Search), usamos **Búsqueda Semántica**:
+        1. **Embeddings:** Convertimos las descripciones de las películas en vectores numéricos de alta dimensión (384 dimensiones) usando el modelo `SentenceTransformer`.
+        2. **Indexación con FAISS:** - Utilizamos la librería **FAISS (Facebook AI Similarity Search)** para organizar estos vectores.
+            - Esto permite realizar búsquedas de similitud de coseno en milisegundos, encontrando las películas 'más cercanas' al deseo del usuario en un espacio vectorial.
+        """)
+        
+
+    with tab3:
+        st.markdown("#### 🚀 Salida: Prompt Engineering & Gemini")
+        st.write("""
+        El paso final une la base de datos con la Inteligencia Artificial Generativa:
+        1. **Recuperación:** FAISS nos devuelve las 5 películas más parecidas a la consulta.
+        2. **Contextualización:** Creamos un **Prompt Dinámico** que incluye:
+            - La consulta original del usuario.
+            - La lista de las 5 películas encontradas en nuestro índice.
+        3. **Generación:** Le pedimos a **Gemini/Gemma** que analice ese contexto y redacte una recomendación personalizada, explicando *por qué* esas películas encajan con lo que el usuario busca.
+        """)
+        st.success("**Resultado final:** Una respuesta coherente, basada en datos reales y procesada por IA.")
+
+st.divider()
+
 st.caption("Ingeniería en Sistemas - UTN FRLP | v4.0 2026")
 
 # Footer con colaboradores
