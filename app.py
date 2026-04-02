@@ -44,11 +44,11 @@ except Exception as e:
     st.error(f"Error cargando datos: {e}", icon=":material/database_alert:")
     st.stop()
 
-# --- GESTIÓN DE ESTADO PERSISTENTE ---
-# Intentamos obtener el valor del navegador
+# --- GESTIÓN DE ESTADO PERSISTENTE---
+# 1. Leemos del navegador (asíncrono)
 val_ls = local_storage.getItem(LS_KEY)
 
-# Sincronizamos el session_state con el LocalStorage
+# 2. Sincronizamos Session State como Fuente de Verdad
 if "rate_limit" not in st.session_state:
     if val_ls is not None:
         st.session_state.rate_limit = int(val_ls)
@@ -67,7 +67,7 @@ def configurar_api():
     key_input = st.sidebar.text_input(
         "Ingresar API Key Personal", 
         type="password", 
-        placeholder="AIza...",
+        placeholder="API Key...",
         help="Obtén tu clave en Google AI Studio."
     )
 
@@ -88,13 +88,24 @@ def configurar_api():
             "Seleccionar Modelo", 
             ["gemini-3-flash", "gemini-3-pro", "gemini-2.5-flash", "gemma-3-27b-it", "gemma-3-12b-it"]
         )
+
+        # Información de cuotas debajo del selector
+        st.sidebar.markdown(f"""
+            <div style="font-size: 0.8rem; color: gray; margin-top: 10px;">
+                Límites sujetos a tu cuota en <a href="https://aistudio.google.com/app/plan_management" target="_blank" style="color: #007BFF; text-decoration: none;">Google AI Studio</a>.<br>
+                Consulta tu consumo <a href="https://aistudio.google.com/app/usage" target="_blank" style="color: #007BFF; text-decoration: none;">aquí</a>.
+            </div>
+            """, unsafe_allow_html=True)
+
         return genai.GenerativeModel(selected_model), True
+
+
 
     else:
         if "GEMINI_API_KEY" in st.secrets:
             my_key = st.secrets["GEMINI_API_KEY"]
             
-            # Validación de límite con el estado persistente
+            # Usamos siempre el valor de session_state para la UI
             if st.session_state.rate_limit < 5:
                 genai.configure(api_key=my_key)
                 restantes = 5 - st.session_state.rate_limit
@@ -102,7 +113,7 @@ def configurar_api():
                 modo_label = "Modo: Local (Config)" if es_local() else "Modo: Soporte de Sistema"
                 st.sidebar.info(modo_label, icon=":material/settings_suggest:")
                 st.sidebar.progress(restantes / 5, text=f"{restantes} créditos restantes")
-                st.sidebar.caption("Recursos provistos por el desarrollador (Persistente).")
+                st.sidebar.caption("Recursos provistos por el desarrollador.")
                 
                 return genai.GenerativeModel(selected_model), False
             else:
@@ -153,29 +164,52 @@ if btn_search:
                 ])
                 
                 prompt = f"Usuario busca: {user_query}\nCandidatos:\n{contexto}\nRecomienda brevemente las mejores opciones en español."
-                
                 response = model_gemini.generate_content(prompt)
                 
-                # Guardamos la respuesta en el estado
+                # 1. Actualizar Respuesta
                 st.session_state.ultima_respuesta = response.text
                 
-                # Actualización de créditos
+                # 2. Actualizar Créditos (RAM + Browser)
                 if not usando_personal:
-                    # Incrementamos en la sesión
                     st.session_state.rate_limit += 1
-                    # Guardamos en el navegador (LocalStorage)
                     local_storage.setItem(LS_KEY, st.session_state.rate_limit)
+                    st.toast(f"Crédito usado: {st.session_state.rate_limit}/5", icon=":material/analytics:")
                 
-                st.rerun() 
+                # 3. Rerun para refrescar la barra lateral inmediatamente
+                st.rerun()
                     
             except Exception as e:
                 st.error(f"Fallo en la inferencia: {e}", icon=":material/emergency_home:")
 
-# Renderizado de resultados (persiste tras el rerun)
+# Renderizado de resultados
 if st.session_state.ultima_respuesta:
     st.markdown("---")
     st.markdown("### :material/recommend: Recomendación")
     st.success(st.session_state.ultima_respuesta)
 
 st.divider()
-st.caption("Ingeniería en Sistemas | v3.3 2026")
+st.caption("Ingeniería en Sistemas - Ciencia de Datos")
+
+st.markdown(
+    """
+    <style>
+    .link-colaborador {
+        text-decoration: none;
+        color: #007bff;
+        font-weight: bold;
+    }
+    .link-colaborador:hover {
+        text-decoration: underline;
+    }
+    </style>
+    <p style="font-size: 0.85rem; color: gray;">
+        <strong>Desarrollado por: </strong>
+        <a href="https://www.linkedin.com/in/gabriel-scarafia/" target="_blank" class="link-colaborador">Gabriel Scarafia</a>, 
+        <a href="https://www.linkedin.com/in/matias-russo22/" target="_blank" class="link-colaborador">Matias Russo</a>,
+        <a href="https://www.linkedin.com/in/manuel-morullo-161677289/" target="_blank" class="link-colaborador">Manuel Morullo</a>, 
+        <a href="https://www.linkedin.com/in/joaquin-munoz-dev/" target="_blank" class="link-colaborador">Joaquin Muñoz</a>, 
+        <a href="#" target="_blank" class="link-colaborador">Tomas Sbert</a>
+    </p>
+    """,
+    unsafe_allow_html=True
+)
