@@ -47,9 +47,10 @@ def get_server_db():
 
 server_db = get_server_db()
 
-# Identificación del usuario por IP
+# Identificación del usuario por IP (Lógica robusta para Cloud)
 try:
-    user_ip = st.context.headers.get("X-Forwarded-For", "localhost").split(",")[0]
+    raw_ip = st.context.headers.get("X-Forwarded-For", "localhost")
+    user_ip = raw_ip.split(",")[0].strip() 
 except:
     user_ip = "localhost"
 
@@ -69,8 +70,18 @@ if "ultima_respuesta" not in st.session_state:
 
 def configurar_api():
     st.sidebar.header("Configuración de Sistema", divider="gray")
-    st.sidebar.markdown("### Backend Engine")
+    
+    # --- MONITOR DE SERVIDOR (DEBUG) ---
+    with st.sidebar.expander("🔍 Monitor de Servidor", expanded=False):
+        st.write(f"**Tu ID actual:** `{user_key}`")
+        st.write(f"**Usuarios en RAM:** {len(server_db)}")
+        st.json(server_db)
+        if st.button("Limpiar Base de Datos RAM", use_container_width=True):
+            server_db.clear()
+            st.rerun()
+    st.sidebar.divider()
 
+    st.sidebar.markdown("### Backend Engine")
     key_input = st.sidebar.text_input(
         "Ingresar API Key Personal", 
         type="password", 
@@ -167,29 +178,25 @@ if btn_search:
                 prompt = f"Usuario busca: {user_query}\nCandidatos:\n{contexto}\nRecomienda brevemente las mejores opciones en español."
                 response = model_gemini.generate_content(prompt)
                 
-                # 1. Actualizar Respuesta
                 st.session_state.ultima_respuesta = response.text
                 
-                # 2. Actualizar Créditos (RAM + Server Cache)
                 if not usando_personal:
                     st.session_state.rate_limit += 1
                     server_db[user_key] = st.session_state.rate_limit
                     st.toast(f"Crédito usado: {st.session_state.rate_limit}/5", icon=":material/analytics:")
                 
-                # 3. Rerun para refrescar la barra lateral inmediatamente
                 st.rerun()
                     
             except Exception as e:
                 st.error(f"Fallo en la inferencia: {e}", icon=":material/emergency_home:")
 
-# Renderizado de resultados
 if st.session_state.ultima_respuesta:
     st.markdown("---")
     st.markdown("### :material/recommend: Recomendación")
     st.success(st.session_state.ultima_respuesta)
 
 st.divider()
-st.caption("Ingeniería en Sistemas - Ciencia de Datos | v3.3 2026")
+st.caption("Ingeniería en Sistemas - Ciencia de Datos | v3.3.1 2026")
 
 st.markdown(
     """
