@@ -11,3 +11,4 @@ spacy
 matplotlib
 seaborn
 wordcloud
+streamlit

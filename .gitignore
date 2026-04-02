@@ -6,3 +6,5 @@ dataset/*
 ml-20m/
 dataset.zip
 /.venv
+.streamlit/secrets.toml
+.env

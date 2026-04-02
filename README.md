@@ -23,3 +23,5 @@ IMPORTANTE: AL EJECUTAR LAN NOTEBOOK SELECCIONAR COMO Kernel EL ENTORNO VIRTUAL 
 El Kernel seleccionado debería verse así por ejemplo: .venv (Python 3.13.3)
 No elegir solo Python 3.13.3 porque no estarías usando el entorno virtual
         
+
+streamlit run app.py
