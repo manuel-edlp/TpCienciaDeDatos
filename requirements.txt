@@ -12,3 +12,4 @@ matplotlib
 seaborn
 wordcloud
 streamlit
+streamlit-local-storage

@@ -6,11 +6,13 @@ import os
 import socket
 import google.generativeai as genai
 from sentence_transformers import SentenceTransformer
+from streamlit_local_storage import LocalStorage
 
 # --- CONSTANTES Y RUTAS ---
 FAISS_FILE = "movie_embeddings.faiss"
 DATA_FILE = "movies_preprocessed.pkl"
 SCALER_FILE = "scaler.joblib"
+LS_KEY = "movie_recommender_rate_limit"
 
 # --- DETECCIÓN DE ENTORNO ---
 def es_local():
@@ -23,6 +25,9 @@ st.set_page_config(
     page_icon=":material/movie:", 
     layout="centered"
 )
+
+# --- INICIALIZACIÓN DE LOCAL STORAGE ---
+local_storage = LocalStorage()
 
 # --- CARGA DE RECURSOS (CACHED) ---
 @st.cache_resource
@@ -39,11 +44,21 @@ except Exception as e:
     st.error(f"Error cargando datos: {e}", icon=":material/database_alert:")
     st.stop()
 
-# --- GESTIÓN DE ESTADO ---
+# --- GESTIÓN DE ESTADO PERSISTENTE ---
+# Intentamos obtener el valor del navegador
+val_ls = local_storage.getItem(LS_KEY)
+
+# Sincronizamos el session_state con el LocalStorage
 if "rate_limit" not in st.session_state:
-    st.session_state.rate_limit = 0
+    if val_ls is not None:
+        st.session_state.rate_limit = int(val_ls)
+    else:
+        st.session_state.rate_limit = 0
+
 if "api_autenticada" not in st.session_state:
     st.session_state.api_autenticada = False
+if "ultima_respuesta" not in st.session_state:
+    st.session_state.ultima_respuesta = None
 
 def configurar_api():
     st.sidebar.header("Configuración de Sistema", divider="gray")
@@ -73,37 +88,29 @@ def configurar_api():
             "Seleccionar Modelo", 
             ["gemini-3-flash", "gemini-3-pro", "gemini-2.5-flash", "gemma-3-27b-it", "gemma-3-12b-it"]
         )
-
-        st.sidebar.markdown(f"""
-            <div style="font-size: 0.8rem; color: gray; margin-top: 15px;">
-                Límites sujetos a tu cuota en <a href="https://aistudio.google.com/app/plan_management" target="_blank" style="color: #007BFF; text-decoration: none;">Google AI Studio</a>.<br>
-                Consulta tu consumo <a href="https://aistudio.google.com/app/usage" target="_blank" style="color: #007BFF; text-decoration: none;">aquí</a>.
-            </div>
-            """, unsafe_allow_html=True)
-        
         return genai.GenerativeModel(selected_model), True
 
     else:
         if "GEMINI_API_KEY" in st.secrets:
             my_key = st.secrets["GEMINI_API_KEY"]
             
+            # Validación de límite con el estado persistente
             if st.session_state.rate_limit < 5:
                 genai.configure(api_key=my_key)
                 restantes = 5 - st.session_state.rate_limit
                 
-                # CORRECCIÓN AQUÍ: settings_suggest en minúsculas
                 modo_label = "Modo: Local (Config)" if es_local() else "Modo: Soporte de Sistema"
                 st.sidebar.info(modo_label, icon=":material/settings_suggest:")
                 st.sidebar.progress(restantes / 5, text=f"{restantes} créditos restantes")
-                st.sidebar.caption("Recursos de infraestructura provistos por el desarrollador.")
+                st.sidebar.caption("Recursos provistos por el desarrollador (Persistente).")
                 
                 return genai.GenerativeModel(selected_model), False
             else:
-                st.sidebar.warning("Soporte de sistema agotado", icon=":material/lock_clock:")
-                st.sidebar.markdown("Obtén una clave en [Google AI Studio](https://aistudio.google.com/app/apikey).")
+                st.sidebar.warning("Créditos de sistema agotados", icon=":material/lock_clock:")
+                st.sidebar.markdown("Usa tu propia API Key para continuar.")
                 return None, False
         else:
-            st.sidebar.error("Archivo de secretos detectado pero 'GEMINI_API_KEY' no encontrada.", icon=":material/key_off:")
+            st.sidebar.error("Secrets no configurados.", icon=":material/key_off:")
             return None, False
 
 # --- LÓGICA DE BÚSQUEDA ---
@@ -116,7 +123,6 @@ def buscar_peliculas(query, top_k=5):
 # --- INTERFAZ PRINCIPAL ---
 st.title(":material/smart_toy: Movie AI Recommender")
 st.subheader("Búsqueda Semántica de Cine", divider="blue")
-st.markdown("Utiliza Inteligencia Artificial para encontrar películas por su significado.")
 
 res_config = configurar_api()
 if res_config:
@@ -136,38 +142,40 @@ with col_btn:
 
 if btn_search:
     if not model_gemini:
-        st.error("Se requiere una API Key válida.", icon=":material/lock:")
+        st.error("Límite alcanzado o API Key no válida.", icon=":material/lock:")
     elif user_query:
-        # Usamos spinner para una carga limpia sin contenedores colapsables
-        with st.spinner("Analizando preferencias y consultando base de datos..."):
-            # 1. Búsqueda Vectorial
-            recs = buscar_peliculas(user_query)
-            
-            # 2. Preparación de contexto
-            contexto = "\n".join([
-                f"- {row['CleanTitle']} ({row['Year']}): {row['Genres']}." 
-                for _, row in recs.iterrows()
-            ])
-            
-            prompt = f"Usuario busca: {user_query}\nCandidatos:\n{contexto}\nRecomienda brevemente las mejores opciones en español."
-            
-            # 3. Generación con LLM
+        with st.spinner("Analizando preferencias..."):
             try:
+                recs = buscar_peliculas(user_query)
+                contexto = "\n".join([
+                    f"- {row['CleanTitle']} ({row['Year']}): {row['Genres']}." 
+                    for _, row in recs.iterrows()
+                ])
+                
+                prompt = f"Usuario busca: {user_query}\nCandidatos:\n{contexto}\nRecomienda brevemente las mejores opciones en español."
+                
                 response = model_gemini.generate_content(prompt)
                 
-                # Mostramos los resultados directamente
-                st.markdown("---")
-                st.markdown("### :material/recommend: Recomendación")
-                st.success(response.text)
+                # Guardamos la respuesta en el estado
+                st.session_state.ultima_respuesta = response.text
                 
-                # Actualizar cuota si corresponde
+                # Actualización de créditos
                 if not usando_personal:
+                    # Incrementamos en la sesión
                     st.session_state.rate_limit += 1
+                    # Guardamos en el navegador (LocalStorage)
+                    local_storage.setItem(LS_KEY, st.session_state.rate_limit)
+                
+                st.rerun() 
                     
             except Exception as e:
                 st.error(f"Fallo en la inferencia: {e}", icon=":material/emergency_home:")
-    else:
-        st.warning("Ingresa una descripción para iniciar la búsqueda.", icon=":material/chat_error:")
+
+# Renderizado de resultados (persiste tras el rerun)
+if st.session_state.ultima_respuesta:
+    st.markdown("---")
+    st.markdown("### :material/recommend: Recomendación")
+    st.success(st.session_state.ultima_respuesta)
 
 st.divider()
 st.caption("Ingeniería en Sistemas | v3.3 2026")
