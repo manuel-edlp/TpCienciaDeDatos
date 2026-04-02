@@ -181,7 +181,7 @@ with st.expander("📂 Documentación Técnica: ¿Cómo funciona este Recomendad
 
 st.divider()
 
-st.caption("Ingeniería en Sistemas - UTN FRLP | v4.0 2026")
+st.caption("Ingeniería en Sistemas - UTN FRLP - Ciencia de Datos | v4.0 2026")
 
 # Footer con colaboradores
 st.markdown(
