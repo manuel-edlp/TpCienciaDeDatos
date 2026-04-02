@@ -4,7 +4,6 @@ import faiss
 import joblib
 import os
 import socket
-import uuid
 import google.generativeai as genai
 from sentence_transformers import SentenceTransformer
 
@@ -40,30 +39,7 @@ except Exception as e:
     st.error(f"Error cargando datos: {e}", icon=":material/database_alert:")
     st.stop()
 
-# --- GESTIÓN DE ESTADO PERSISTENTE (SERVER-SIDE CACHE) ---
-@st.cache_resource
-def get_server_db():
-    # Diccionario global en la RAM del servidor: { user_key: count }
-    return {}
-
-server_db = get_server_db()
-
-# --- LÓGICA DE IDENTIFICACIÓN POR UUID (URL) ---
-# Intentamos obtener el ID de los parámetros de la URL
-current_uid = st.query_params.get("uid")
-
-if not current_uid:
-    # Si no existe, generamos uno nuevo y reiniciamos para inyectarlo en la URL
-    new_uid = str(uuid.uuid4())[:8]
-    st.query_params["uid"] = new_uid
-    st.rerun()
-else:
-    user_key = f"limit_{current_uid}"
-
-# Sincronizamos Session State con la "DB" del servidor usando el UUID
-if "rate_limit" not in st.session_state:
-    st.session_state.rate_limit = server_db.get(user_key, 0)
-
+# --- ESTADO DE SESIÓN ---
 if "api_autenticada" not in st.session_state:
     st.session_state.api_autenticada = False
 if "ultima_respuesta" not in st.session_state:
@@ -72,65 +48,46 @@ if "ultima_respuesta" not in st.session_state:
 def configurar_api():
     st.sidebar.header("Configuración de Sistema", divider="gray")
     
-    # --- MONITOR DE SERVIDOR ---
-    with st.sidebar.expander("🔍 Monitor de Servidor", expanded=False):
-        st.write(f"**Tu ID de Sesión:** `{user_key}`")
-        st.write(f"**Usuarios en RAM:** {len(server_db)}")
-        st.json(server_db)
-        if st.button("Limpiar Base de Datos RAM", use_container_width=True):
-            server_db.clear()
-            st.rerun()
-    st.sidebar.divider()
-
     st.sidebar.markdown("### Backend Engine")
     key_input = st.sidebar.text_input(
         "Ingresar API Key Personal", 
         type="password", 
         placeholder="API Key...",
-        help="Obtén tu clave en Google AI Studio."
+        help="Si el sistema no responde, puedes usar tu propia clave de Google AI Studio."
     )
 
     if st.sidebar.button("Validar API Key", use_container_width=True):
         if key_input:
             st.session_state.api_autenticada = True
-            st.toast("API Key validada correctamente", icon=":material/check_circle:")
+            st.toast("Usando API Key personal", icon=":material/check_circle:")
             st.rerun()
-        else:
-            st.sidebar.warning("Ingresa una clave válida.", icon=":material/warning:")
 
     selected_model = "gemma-3-27b-it" 
     
     if st.session_state.api_autenticada and key_input:
         genai.configure(api_key=key_input)
         st.sidebar.success("Modo: API Key Personal", icon=":material/shield_person:")
-        
         selected_model = st.sidebar.selectbox(
             "Seleccionar Modelo", 
-            ["gemini-3-flash", "gemini-3-pro", "gemini-2.5-flash", "gemma-3-27b-it", "gemma-3-12b-it"]
+            [ "gemini-2.5-flash", "gemini-3-flash", "gemini-3-pro", "gemma-3-12b-it", "gemma-3-27b-it"]
         )
-        return genai.GenerativeModel(selected_model), True
-
+        st.sidebar.markdown(f"""
+            <div style="font-size: 0.8rem; color: gray; margin-top: 15px;">
+                Límites sujetos a tu cuota en <a href="https://aistudio.google.com/app/plan_management" target="_blank" style="color: #007BFF; text-decoration: none;">Google AI Studio</a>.<br>
+                Consulta tu consumo <a href="https://aistudio.google.com/app/usage" target="_blank" style="color: #007BFF; text-decoration: none;">aquí</a>.
+            </div>
+            """, unsafe_allow_html=True)
+        return genai.GenerativeModel(selected_model)
     else:
+        # Intenta usar la Key global de los secrets sin límites de software
         if "GEMINI_API_KEY" in st.secrets:
-            my_key = st.secrets["GEMINI_API_KEY"]
-            
-            if st.session_state.rate_limit < 5:
-                genai.configure(api_key=my_key)
-                restantes = 5 - st.session_state.rate_limit
-                
-                modo_label = "Modo: Local" if es_local() else "Modo: Soporte de Sistema"
-                st.sidebar.info(modo_label, icon=":material/settings_suggest:")
-                st.sidebar.progress(restantes / 5, text=f"{restantes} créditos restantes")
-                st.sidebar.caption("Recursos provistos por el desarrollador.")
-                
-                return genai.GenerativeModel(selected_model), False
-            else:
-                st.sidebar.warning("Créditos de sistema agotados", icon=":material/lock_clock:")
-                st.sidebar.markdown("Usa tu propia API Key para continuar.")
-                return None, False
+            genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+            modo_label = "Modo: API de Cortesía" if es_local() else "Modo: Soporte de Sistema"
+            st.sidebar.info(modo_label, icon=":material/settings_suggest:")
+            return genai.GenerativeModel(selected_model)
         else:
-            st.sidebar.error("Secrets no configurados.", icon=":material/key_off:")
-            return None, False
+            st.sidebar.error("Configura una API Key para comenzar.", icon=":material/key_off:")
+            return None
 
 # --- LÓGICA DE BÚSQUEDA ---
 def buscar_peliculas(query, top_k=5):
@@ -143,8 +100,7 @@ def buscar_peliculas(query, top_k=5):
 st.title(":material/smart_toy: Movie AI Recommender")
 st.subheader("Búsqueda Semántica de Cine", divider="blue")
 
-res_config = configurar_api()
-model_gemini, usando_personal = res_config if res_config else (None, False)
+model_gemini = configurar_api()
 
 user_query = st.text_input(
     "Busca películas describiendo lo que sientes o quieres ver", 
@@ -158,7 +114,7 @@ with col_btn:
 
 if btn_search:
     if not model_gemini:
-        st.error("Límite alcanzado o API Key no válida.", icon=":material/lock:")
+        st.error("No hay una API Key configurada.", icon=":material/lock:")
     elif user_query:
         with st.spinner("Analizando preferencias..."):
             try:
@@ -172,17 +128,11 @@ if btn_search:
                 response = model_gemini.generate_content(prompt)
                 
                 st.session_state.ultima_respuesta = response.text
-                
-                if not usando_personal:
-                    st.session_state.rate_limit += 1
-                    # Persistimos en la base de datos RAM del servidor
-                    server_db[user_key] = st.session_state.rate_limit
-                    st.toast(f"Crédito usado: {st.session_state.rate_limit}/5", icon=":material/analytics:")
-                
                 st.rerun()
                     
             except Exception as e:
-                st.error(f"Fallo en la inferencia: {e}", icon=":material/emergency_home:")
+                st.error(f"Error en la consulta: {e}", icon=":material/emergency_home:")
+                st.info("Si el error persiste, es posible que la cuota de la API se haya agotado. Intenta cargando tu propia API Key en el menú lateral.")
 
 if st.session_state.ultima_respuesta:
     st.markdown("---")
@@ -190,7 +140,7 @@ if st.session_state.ultima_respuesta:
     st.success(st.session_state.ultima_respuesta)
 
 st.divider()
-st.caption("Ingeniería en Sistemas - Ciencia de Datos | v3.6 2026")
+st.caption("Ingeniería en Sistemas - UTN FRLP | v4.0 2026")
 
 # Footer con colaboradores
 st.markdown(
