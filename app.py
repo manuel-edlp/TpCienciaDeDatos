@@ -104,7 +104,7 @@ model_gemini = configurar_api()
 
 user_query = st.text_input(
     "Busca películas describiendo lo que sientes o quieres ver", 
-    placeholder="Ejemplo: Una película de acción de los 2000 con mucha comedia",
+    placeholder="Ejemplo: Peliculas que transcurran en la selva",
     max_chars=150
 )
 
