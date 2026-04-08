@@ -5,27 +5,54 @@ import joblib
 import os
 import socket
 import google.generativeai as genai
+import requests
 from sentence_transformers import SentenceTransformer
-import random
 
 # --- CONSTANTES Y RUTAS ---
 FAISS_FILE = "movie_embeddings.faiss"
 DATA_FILE = "movies_preprocessed.pkl"
 SCALER_FILE = "scaler.joblib"
 
-# --- DETECCIÓN DE ENTORNO ---
 def es_local():
     is_cloud = os.environ.get("STREAMLIT_RUNTIME_ENV", False)
     return not is_cloud and "streamlit" not in socket.gethostname().lower()
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(
-    page_title="Movie AI Recommender", 
-    page_icon=":material/movie:", 
-    layout="centered"
-)
+st.set_page_config(page_title="Movie AI Recommender", page_icon="🎬", layout="centered")
 
-# --- CARGA DE RECURSOS (CACHED) ---
+# --- MANEJO DE SECRETOS (LOCAL Y CLOUD) ---
+TMDB_API_KEY = st.secrets.get("TMDB_API_KEY") or os.environ.get("TMDB_API_KEY")
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+
+# --- FUNCIÓN DE POSTERS OPTIMIZADA ---
+def obtener_url_poster(movie_id):
+    # Intentamos sacar la key de donde sea que esté
+    api_key_tmdb = st.secrets.get("TMDB_API_KEY") or os.environ.get("TMDB_API_KEY")
+    
+    if not api_key_tmdb:
+        return "https://placehold.co/500x750?text=Falta+API+Key"
+
+    if not movie_id or pd.isna(movie_id):
+        return "https://placehold.co/500x750?text=Sin+ID"
+
+    # Forzamos a que sea un entero
+    id_limpio = int(movie_id)
+    url = f"https://api.themoviedb.org/3/movie/{id_limpio}?api_key={api_key_tmdb}&language=es-ES"
+    
+    try:
+        response = requests.get(url, timeout=3)
+        if response.status_code == 200:
+            data = response.json()
+            poster_path = data.get('poster_path')
+            if poster_path:
+                return f"https://image.tmdb.org/t/p/w500{poster_path}"
+        else:
+            # Si la API responde pero no 200 (ej: 401 por key inválida)
+            return f"https://placehold.co/500x750?text=Error+API+{response.status_code}"
+    except Exception:
+        return "https://placehold.co/500x750?text=Error+Red"
+    
+    return "https://placehold.co/500x750?text=No+Poster"
 @st.cache_resource
 def load_resources():
     movies_df = pd.read_pickle(DATA_FILE)
@@ -181,44 +208,75 @@ col_btn, _ = st.columns([1, 3])
 with col_btn:
     btn_search = st.button("Analizar", type="primary", use_container_width=True)
 
+# --- 1. PROMPT CON FILTRO POR TÍTULO ---
 if btn_search:
-    if not model_gemini:
-        st.error("No hay una API Key configurada.", icon=":material/lock:")
-    elif user_query:
-        with st.spinner("Analizando preferencias..."):
-            try:
-                recs = buscar_peliculas(user_query)
-                contexto = "\n".join([
-                    f"- {row['CleanTitle']} ({row['Year']}): {row['Genres']}." 
-                    for _, row in recs.iterrows()
-                ])
-                
-                prompt = f"""
-                Actúa como un experto cinéfilo. El usuario busca: "{user_query}"
-                Candidatos encontrados en la base de datos:
-                {contexto}
+    if user_query:
+        with st.spinner("El Sommelier está analizando..."):
+            recs = buscar_peliculas(user_query)
+            st.session_state.last_recs = recs 
+            
+            contexto_detallado = "\n".join([
+                f"- {row['CleanTitle']} ({row['Year']}): {row['Genres']}." 
+                for _, row in recs.iterrows()
+            ])
+            
+            prompt = f"""
+            Actúa como un experto cinéfilo. El usuario busca: "{user_query}"
+            Candidatos:
+            {contexto_detallado}
 
-                Instrucciones:
-                1. Selecciona solo las películas que realmente encajen con la búsqueda.
-                2. Para las seleccionadas, explica brevemente por qué las recomiendas.
-                3. Si alguna película NO encaja, NO la menciones bajo ningún concepto (ni para decir que no la recomiendas). El usuario no sabe cuáles son los candidatos.
-                4. Si una película encaja solo parcialmente, puedes mencionarla aclarando ese matiz.
-                5. Responde directamente en español.
-                """
-                
-                response = model_gemini.generate_content(prompt)
-                
-                st.session_state.ultima_respuesta = response.text
-                st.rerun()
-                    
-            except Exception as e:
-                st.error(f"Error en la consulta: {e}", icon=":material/emergency_home:")
-                st.info("Si el error persiste, es posible que la cuota de la API se haya agotado. Intenta cargando tu propia API Key en el menú lateral.")
+            Instrucciones:
+            1. Selecciona solo las películas que realmente encajen.
+            2. No empieces con frases genéricas como 'Basado en tu búsqueda'. 
+            3. Usá un lenguaje cálido, entusiasta y humano. 
+            4. Imagina que sos un amigo cinéfilo recomendando algo en una charla de café.
+            5. Podés usar expresiones como '¡Tengo las opciones perfectas!', 'Si buscás eso, esta te va a volar la cabeza', o 'Prepará los pochoclos para estas joyas'.
+            6. Para las seleccionadas, explica por qué las recomiendas.
+            7. Si alguna NO encaja, NO la menciones.
+            8. AL FINAL, escribí los títulos exactos aprobados así:
+               TITULOS_OK: Título 1, Título 2
+            """
+            
+            response = model_gemini.generate_content(prompt)
+            texto_completo = response.text
+            
+            # Extraer títulos para el filtro visual
+            titulos_aprobados = []
+            if "TITULOS_OK:" in texto_completo:
+                partes = texto_completo.split("TITULOS_OK:")
+                st.session_state.ultima_respuesta = partes[0].strip()
+                titulos_raw = partes[1].strip().split(",")
+                titulos_aprobados = [t.strip().lower() for t in titulos_raw]
+            else:
+                st.session_state.ultima_respuesta = texto_completo
 
-if st.session_state.ultima_respuesta:
-    st.markdown("---")
-    st.markdown("### :material/recommend: Recomendación")
-    st.success(st.session_state.ultima_respuesta)
+            st.session_state.titulos_filtro = titulos_aprobados
+            st.rerun()
+
+# --- 2. RENDERIZADO INTELIGENTE ---
+if st.session_state.get("last_recs") is not None:
+    # Si tenemos títulos aprobados, filtramos. Si no, por seguridad mostramos todos.
+    titulos_ok = st.session_state.get("titulos_filtro", [])
+    
+    if titulos_ok:
+        # Filtramos el DataFrame: el título debe estar en la lista de aprobados
+        mask = st.session_state.last_recs['CleanTitle'].str.lower().isin(titulos_ok)
+        recs_a_mostrar = st.session_state.last_recs[mask]
+    else:
+        recs_a_mostrar = st.session_state.last_recs
+
+    # Solo mostramos la sección si hay algo que mostrar
+    if not recs_a_mostrar.empty:
+        st.markdown("### 🍿 Recomendaciones seleccionadas")
+        cols = st.columns(len(recs_a_mostrar))
+        for i, (_, row) in enumerate(recs_a_mostrar.iterrows()):
+            with cols[i]:
+                url = obtener_url_poster(row['id'])
+                st.image(url, width='stretch')
+                st.caption(f"**{row['CleanTitle']}**")
+
+if st.session_state.get("ultima_respuesta"):
+    st.info(st.session_state.ultima_respuesta)
 
 st.divider()
 # --- SECCIÓN EXPLICATIVA (METODOLOGÍA) ---
