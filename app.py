@@ -6,6 +6,7 @@ import os
 import socket
 import google.generativeai as genai
 from sentence_transformers import SentenceTransformer
+import random
 
 # --- CONSTANTES Y RUTAS ---
 FAISS_FILE = "movie_embeddings.faiss"
@@ -44,11 +45,13 @@ if "api_autenticada" not in st.session_state:
     st.session_state.api_autenticada = False
 if "ultima_respuesta" not in st.session_state:
     st.session_state.ultima_respuesta = None
+if "query_sugerida" not in st.session_state:
+    st.session_state.query_sugerida = ""
 
 def configurar_api():
     st.sidebar.header("Configuración de Sistema", divider="gray")
     
-    st.sidebar.markdown("### Backend Engine")
+    st.sidebar.markdown("### Cambiar Api Key")
     key_input = st.sidebar.text_input(
         "Ingresar API Key Personal", 
         type="password", 
@@ -102,10 +105,76 @@ st.subheader("Búsqueda Semántica de Cine", divider="blue")
 
 model_gemini = configurar_api()
 
+
+
+# --- SECCIÓN DE INSPIRACIÓN Y TEST RAG ---
+with st.container():
+    st.markdown("### 💡 ¿Falta de inspiración?")
+    st.markdown("""
+        Si no sabes por dónde empezar, usá este **Laboratorio de Ideas**. 
+        Estos ejemplos están diseñados para desafiar la capacidad de la IA de entender conceptos abstractos y sentimientos, 
+        algo que un buscador común no podría resolver.
+    """)
+
+    # --- SECCIÓN DE PRUEBAS DE ESTRÉS RAG ---
+    with st.expander("✨ Ver categorías de búsqueda avanzada", expanded=True):
+        modo = st.radio(
+            "Seleccioná qué aspecto de la IA querés poner a prueba:",
+            ["Vibe & Sentimiento", "Conceptos Abstractos", "Tramas Específicas", "Híbridos"],
+            horizontal=True,
+            help="Cada categoría desafía a los vectores de forma diferente."
+        )
+
+        opciones_rag = {
+            "Vibe & Sentimiento": [
+                "Películas que te dejan con una sensación de vacío existencial pero son visualmente hermosas.",
+                "Algo para ver un domingo de lluvia que me haga sentir esperanza en la humanidad.",
+                "Historias melancólicas sobre amores que nunca pudieron ser.",
+                "Una trama que me mantenga en tensión constante y me haga dudar de lo que veo.",
+                "Cine contemplativo para desconectar del ruido de la ciudad."
+            ],
+            "Conceptos Abstractos": [
+                "El efecto mariposa y cómo pequeñas decisiones cambian la vida para siempre.",
+                "La delgada línea entre la genialidad y la locura en el arte o la ciencia.",
+                "Películas que exploren la soledad en ciudades futuristas y altamente tecnológicas.",
+                "Crítica social disfrazada de sátira o humor negro muy ácido.",
+                "La superación del duelo a través de viajes inesperados."
+            ],
+            "Tramas Específicas": [
+                "Un grupo de personas atrapadas en un solo lugar que deben sobrevivir a un juego macabro.",
+                "Un detective retirado que tiene que resolver un último caso que involucra su propio pasado.",
+                "Viajes en el tiempo donde las reglas son confusas y hay paradojas temporales.",
+                "Inteligencia artificial que cobra conciencia y se enamora o se rebela.",
+                "Un náufrago que debe aprender a comunicarse con la naturaleza para no volverse loco."
+            ],
+            "Híbridos": [
+                "Un western pero que transcurra en el espacio exterior con alienígenas.",
+                "Terror psicológico mezclado con musical o elementos de danza.",
+                "Comedia romántica que tenga un giro de guion (twist) oscuro y violento al final.",
+                "Documental ficcionado sobre una civilización que nunca existió.",
+                "Animación para adultos con una carga política y filosófica pesada."
+            ]
+        }
+
+        seleccion = st.selectbox("Elegí una idea para cargar en el buscador:", ["Selecciona una opción..."] + opciones_rag[modo])
+
+        if seleccion != "Selecciona una opción...":
+            if st.button("🚀 Cargar esta idea en el buscador", use_container_width=True):
+                st.session_state.query_sugerida = seleccion
+                st.rerun()
+
+st.divider()
+
+# --- INPUT PRINCIPAL ---
+st.markdown("### 🔍 Tu búsqueda personalizada")
+st.markdown("_Animate a pedir algo complejo. Hablale a la IA sobre lo que sentís o lo que tenés ganas de experimentar._")
+
 user_query = st.text_input(
-    "Busca películas describiendo lo que sientes o quieres ver", 
-    placeholder="Ejemplo: Peliculas que transcurran en la selva",
-    max_chars=150
+    "¿Qué tenés ganas de ver hoy?", 
+    value=st.session_state.query_sugerida,
+    placeholder="Ej: Una película que me haga sentir que estoy en un sueño...",
+    max_chars=150,
+    label_visibility="collapsed"
 )
 
 col_btn, _ = st.columns([1, 3])
@@ -124,7 +193,19 @@ if btn_search:
                     for _, row in recs.iterrows()
                 ])
                 
-                prompt = f"Usuario busca: {user_query}\nCandidatos:\n{contexto}\nRecomienda brevemente las mejores opciones en español."
+                prompt = f"""
+                Actúa como un experto cinéfilo. El usuario busca: "{user_query}"
+                Candidatos encontrados en la base de datos:
+                {contexto}
+
+                Instrucciones:
+                1. Selecciona solo las películas que realmente encajen con la búsqueda.
+                2. Para las seleccionadas, explica brevemente por qué las recomiendas.
+                3. Si alguna película NO encaja, NO la menciones bajo ningún concepto (ni para decir que no la recomiendas). El usuario no sabe cuáles son los candidatos.
+                4. Si una película encaja solo parcialmente, puedes mencionarla aclarando ese matiz.
+                5. Responde directamente en español.
+                """
+                
                 response = model_gemini.generate_content(prompt)
                 
                 st.session_state.ultima_respuesta = response.text
